@@ -1,0 +1,51 @@
+# Ansible Variables for Quiz Builder Deployment
+
+# Container Registry Configuration
+registry_url: "your-registry.com"
+registry_username: "your-username"
+registry_password: "your-password"
+
+# Application Configuration
+app_name: "quiz-builder"
+namespace: "quiz-builder"
+domain_name: "quiz-builder.example.com"
+
+# Image Configuration
+backend_image_name: "quiz-builder-backend"
+frontend_image_name: "quiz-builder-frontend"
+image_tag: "latest"
+
+# Kubernetes Configuration
+k8s_context: "your-k8s-context"
+k8s_namespace: "quiz-builder"
+
+# Resource Configuration
+backend_replicas: 3
+frontend_replicas: 3
+
+# Database Configuration
+db_name: "quizbuilder"
+db_user: "quizuser"
+db_password: "quizpassword123"
+db_root_password: "rootpassword123"
+
+# SSL/TLS Configuration
+enable_ssl: true
+cluster_issuer: "letsencrypt-prod"
+
+# Scaling Configuration
+min_replicas: 3
+max_replicas: 10
+cpu_threshold: 70
+memory_threshold: 80
+
+# Security Configuration
+jwt_secret: "your-jwt-secret-key-here-change-in-production"
+
+# Monitoring Configuration
+enable_monitoring: true
+prometheus_scrape: true
+
+# Backup Configuration
+enable_backup: true
+backup_schedule: "0 2 * * *"  # Daily at 2 AM

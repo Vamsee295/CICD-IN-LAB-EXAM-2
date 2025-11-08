@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: quiz-builder
+  labels:
+    app.kubernetes.io/name: quiz-builder
+    app.kubernetes.io/component: namespace

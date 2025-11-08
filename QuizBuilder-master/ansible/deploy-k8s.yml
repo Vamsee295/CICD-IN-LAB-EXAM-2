@@ -1,0 +1,291 @@
+---
+- name: Quiz Builder Kubernetes Deployment Playbook
+  hosts: k8s_cluster
+  gather_facts: yes
+  vars:
+    # Application Configuration
+    app_name: "quiz-builder"
+    namespace: "quiz-builder"
+    image_tag: "latest"
+    
+    # Registry Configuration
+    registry_url: "your-registry.com"
+    backend_image: "{{ registry_url }}/quiz-builder-backend"
+    frontend_image: "{{ registry_url }}/quiz-builder-frontend"
+    
+    # Domain Configuration
+    domain_name: "quiz-builder.example.com"
+    
+    # SSL Configuration
+    enable_ssl: true
+    cluster_issuer: "letsencrypt-prod"
+    
+    # Resource Configuration
+    backend_replicas: 3
+    frontend_replicas: 3
+    
+  tasks:
+    - name: Validate Kubernetes cluster connection
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Node
+      register: k8s_nodes
+      
+    - name: Display cluster information
+      debug:
+        msg:
+          - "Connected to Kubernetes cluster"
+          - "Number of nodes: {{ k8s_nodes.resources | length }}"
+          - "Deploying Quiz Builder application"
+          - "Namespace: {{ namespace }}"
+          - "Domain: {{ domain_name }}"
+          
+    # Namespace Management
+    - name: Create namespace
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ namespace }}"
+            labels:
+              app.kubernetes.io/name: "{{ app_name }}"
+              app.kubernetes.io/component: namespace
+              
+    # ConfigMap and Secret Management
+    - name: Apply ConfigMaps and Secrets
+      kubernetes.core.k8s:
+        state: present
+        src: "{{ item }}"
+        namespace: "{{ namespace }}"
+      loop:
+        - "../k8s/backend-config.yaml"
+        - "../k8s/mysql-deployment.yaml"
+      
+    # Update image tags in deployments
+    - name: Apply database deployment
+      kubernetes.core.k8s:
+        state: present
+        src: "../k8s/mysql-deployment.yaml"
+        namespace: "{{ namespace }}"
+        
+    - name: Wait for database to be ready
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        name: mysql
+        namespace: "{{ namespace }}"
+        wait: true
+        wait_condition:
+          type: Progressing
+          status: "True"
+        wait_timeout: 300
+      register: mysql_status
+      
+    # Backend Deployment
+    - name: Apply backend deployment
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: quiz-builder-backend
+            namespace: "{{ namespace }}"
+          spec:
+            replicas: "{{ backend_replicas }}"
+            selector:
+              matchLabels:
+                app.kubernetes.io/name: quiz-builder
+                app.kubernetes.io/component: backend
+            template:
+              spec:
+                containers:
+                - name: backend
+                  image: "{{ backend_image }}:{{ image_tag }}"
+                  imagePullPolicy: Always
+                  env:
+                  - name: DB_HOST
+                    value: "mysql-service"
+                  - name: DB_PORT
+                    value: "3306"
+                  - name: DB_NAME
+                    valueFrom:
+                      configMapKeyRef:
+                        name: mysql-config
+                        key: MYSQL_DATABASE
+                  - name: DB_USERNAME
+                    valueFrom:
+                      configMapKeyRef:
+                        name: mysql-config
+                        key: MYSQL_USER
+                  - name: DB_PASSWORD
+                    valueFrom:
+                      secretKeyRef:
+                        name: mysql-secrets
+                        key: MYSQL_PASSWORD
+        
+    # Frontend Deployment
+    - name: Apply frontend deployment
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: quiz-builder-frontend
+            namespace: "{{ namespace }}"
+          spec:
+            replicas: "{{ frontend_replicas }}"
+            selector:
+              matchLabels:
+                app.kubernetes.io/name: quiz-builder
+                app.kubernetes.io/component: frontend
+            template:
+              spec:
+                containers:
+                - name: frontend
+                  image: "{{ frontend_image }}:{{ image_tag }}"
+                  imagePullPolicy: Always
+                  env:
+                  - name: REACT_APP_API_URL
+                    value: "https://{{ domain_name }}/api"
+                  
+    # Service Management
+    - name: Apply services
+      kubernetes.core.k8s:
+        state: present
+        src: "{{ item }}"
+        namespace: "{{ namespace }}"
+      loop:
+        - "../k8s/backend-deployment.yaml"
+        - "../k8s/frontend-deployment.yaml"
+        
+    # Ingress Configuration
+    - name: Apply ingress
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: quiz-builder-ingress
+            namespace: "{{ namespace }}"
+            annotations:
+              nginx.ingress.kubernetes.io/rewrite-target: /
+              nginx.ingress.kubernetes.io/ssl-redirect: "{{ enable_ssl | string }}"
+              nginx.ingress.kubernetes.io/force-ssl-redirect: "{{ enable_ssl | string }}"
+              cert-manager.io/cluster-issuer: "{{ cluster_issuer }}"
+              nginx.ingress.kubernetes.io/rate-limit: "100"
+              nginx.ingress.kubernetes.io/rate-limit-window: "1m"
+          spec:
+            ingressClassName: nginx
+            tls:
+            - hosts:
+              - "{{ domain_name }}"
+              secretName: quiz-builder-tls
+            rules:
+            - host: "{{ domain_name }}"
+              http:
+                paths:
+                - path: /api
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: quiz-builder-backend-service
+                      port:
+                        number: 8080
+                - path: /
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: quiz-builder-frontend-service
+                      port:
+                        number: 80
+                        
+    # Horizontal Pod Autoscaler
+    - name: Apply HPA
+      kubernetes.core.k8s:
+        state: present
+        src: "../k8s/hpa.yaml"
+        namespace: "{{ namespace }}"
+        
+    # Wait for deployments to be ready
+    - name: Wait for backend deployment to be ready
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        name: quiz-builder-backend
+        namespace: "{{ namespace }}"
+        wait: true
+        wait_condition:
+          type: Available
+          status: "True"
+        wait_timeout: 600
+      register: backend_status
+      
+    - name: Wait for frontend deployment to be ready
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        name: quiz-builder-frontend
+        namespace: "{{ namespace }}"
+        wait: true
+        wait_condition:
+          type: Available
+          status: "True"
+        wait_timeout: 600
+      register: frontend_status
+      
+    # Deployment Verification
+    - name: Get deployment status
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        namespace: "{{ namespace }}"
+      register: deployments
+      
+    - name: Get service status
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Service
+        namespace: "{{ namespace }}"
+      register: services
+      
+    - name: Get ingress status
+      kubernetes.core.k8s_info:
+        api_version: networking.k8s.io/v1
+        kind: Ingress
+        name: quiz-builder-ingress
+        namespace: "{{ namespace }}"
+      register: ingress_status
+      
+    - name: Display deployment summary
+      debug:
+        msg:
+          - "Quiz Builder deployment completed successfully!"
+          - "Namespace: {{ namespace }}"
+          - "Domain: {{ domain_name }}"
+          - "Backend replicas: {{ backend_replicas }}"
+          - "Frontend replicas: {{ frontend_replicas }}"
+          - "SSL enabled: {{ enable_ssl }}"
+          - "Auto-scaling: Enabled"
+          - ""
+          - "Access your application at: https://{{ domain_name }}"
+          - "API endpoint: https://{{ domain_name }}/api"
+          
+    # Health Check
+    - name: Perform health check
+      uri:
+        url: "http://{{ (services.resources | selectattr('metadata.name', 'equalto', 'quiz-builder-backend-service') | list | first).spec.clusterIP }}:8080/actuator/health"
+        method: GET
+        status_code: [200, 503]
+        timeout: 30
+      register: health_check
+      ignore_errors: yes
+      
+    - name: Display health check results
+      debug:
+        msg: "Health check status: {{ health_check.status | default('Failed to connect') }}"
+      when: health_check is defined

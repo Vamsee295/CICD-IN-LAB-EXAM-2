@@ -1,0 +1,183 @@
+---
+- name: Quiz Builder Containerization Playbook
+  hosts: localhost
+  gather_facts: yes
+  vars:
+    # Container Registry Configuration
+    registry_url: "your-registry.com"
+    registry_username: "your-username"
+    registry_password: "your-password"
+    
+    # Application Configuration
+    app_name: "quiz-builder"
+    backend_image_name: "quiz-builder-backend"
+    frontend_image_name: "quiz-builder-frontend"
+    image_tag: "{{ lookup('pipe', 'date +%Y%m%d-%H%M%S') }}"
+    
+    # Build Configuration
+    backend_context: "../backend"
+    frontend_context: "../frontend"
+    
+  tasks:
+    - name: Validate build contexts exist
+      stat:
+        path: "{{ item }}"
+      loop:
+        - "{{ backend_context }}"
+        - "{{ frontend_context }}"
+      register: build_contexts
+      
+    - name: Fail if build contexts are missing
+      fail:
+        msg: "Build context {{ item.item }} does not exist"
+      when: not item.stat.exists
+      loop: "{{ build_contexts.results }}"
+      
+    - name: Display build configuration
+      debug:
+        msg:
+          - "Building Quiz Builder containers"
+          - "Backend context: {{ backend_context }}"
+          - "Frontend context: {{ frontend_context }}"
+          - "Image tag: {{ image_tag }}"
+          - "Registry: {{ registry_url }}"
+          
+    # Backend Container Build
+    - name: Build backend Docker image
+      docker_image:
+        build:
+          path: "{{ backend_context }}"
+          dockerfile: Dockerfile
+        name: "{{ backend_image_name }}"
+        tag: "{{ image_tag }}"
+        source: build
+        state: present
+      register: backend_build_result
+      
+    - name: Tag backend image for registry
+      docker_image:
+        name: "{{ backend_image_name }}"
+        tag: "{{ item }}"
+        repository: "{{ registry_url }}/{{ backend_image_name }}:{{ item }}"
+        state: present
+      loop:
+        - "{{ image_tag }}"
+        - "latest"
+      when: backend_build_result.changed
+      
+    # Frontend Container Build
+    - name: Build frontend Docker image
+      docker_image:
+        build:
+          path: "{{ frontend_context }}"
+          dockerfile: Dockerfile
+        name: "{{ frontend_image_name }}"
+        tag: "{{ image_tag }}"
+        source: build
+        state: present
+      register: frontend_build_result
+      
+    - name: Tag frontend image for registry
+      docker_image:
+        name: "{{ frontend_image_name }}"
+        tag: "{{ item }}"
+        repository: "{{ registry_url }}/{{ frontend_image_name }}:{{ item }}"
+        state: present
+      loop:
+        - "{{ image_tag }}"
+        - "latest"
+      when: frontend_build_result.changed
+      
+    # Security Scanning
+    - name: Install Trivy for security scanning
+      package:
+        name: trivy
+        state: present
+      become: yes
+      ignore_errors: yes
+      
+    - name: Scan backend image for vulnerabilities
+      command: "trivy image --exit-code 0 --severity HIGH,CRITICAL {{ backend_image_name }}:{{ image_tag }}"
+      register: backend_scan_result
+      ignore_errors: yes
+      when: backend_build_result.changed
+      
+    - name: Display backend security scan results
+      debug:
+        msg: "Backend security scan completed: {{ backend_scan_result.stdout_lines | default('Scan skipped') }}"
+      when: backend_scan_result is defined
+      
+    - name: Scan frontend image for vulnerabilities
+      command: "trivy image --exit-code 0 --severity HIGH,CRITICAL {{ frontend_image_name }}:{{ image_tag }}"
+      register: frontend_scan_result
+      ignore_errors: yes
+      when: frontend_build_result.changed
+      
+    - name: Display frontend security scan results
+      debug:
+        msg: "Frontend security scan completed: {{ frontend_scan_result.stdout_lines | default('Scan skipped') }}"
+      when: frontend_scan_result is defined
+      
+    # Push to Registry
+    - name: Login to container registry
+      docker_login:
+        registry: "{{ registry_url }}"
+        username: "{{ registry_username }}"
+        password: "{{ registry_password }}"
+      when: registry_url != "your-registry.com"
+      
+    - name: Push backend images to registry
+      docker_image:
+        name: "{{ registry_url }}/{{ backend_image_name }}"
+        tag: "{{ item }}"
+        push: yes
+        source: local
+      loop:
+        - "{{ image_tag }}"
+        - "latest"
+      when: 
+        - backend_build_result.changed
+        - registry_url != "your-registry.com"
+        
+    - name: Push frontend images to registry
+      docker_image:
+        name: "{{ registry_url }}/{{ frontend_image_name }}"
+        tag: "{{ item }}"
+        push: yes
+        source: local
+      loop:
+        - "{{ image_tag }}"
+        - "latest"
+      when: 
+        - frontend_build_result.changed
+        - registry_url != "your-registry.com"
+        
+    # Image Cleanup
+    - name: Remove local backend images
+      docker_image:
+        name: "{{ backend_image_name }}"
+        tag: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ image_tag }}"
+        - "latest"
+      ignore_errors: yes
+      
+    - name: Remove local frontend images
+      docker_image:
+        name: "{{ frontend_image_name }}"
+        tag: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ image_tag }}"
+        - "latest"
+      ignore_errors: yes
+      
+    - name: Display build summary
+      debug:
+        msg:
+          - "Containerization completed successfully!"
+          - "Backend image: {{ registry_url }}/{{ backend_image_name }}:{{ image_tag }}"
+          - "Frontend image: {{ registry_url }}/{{ frontend_image_name }}:{{ image_tag }}"
+          - "Images tagged with both '{{ image_tag }}' and 'latest'"
+          - "Security scanning completed (if Trivy available)"

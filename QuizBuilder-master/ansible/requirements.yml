@@ -1,0 +1,17 @@
+# Quiz Builder Requirements
+
+# Kubernetes Collection
+kubernetes.core>=2.3.0
+
+# Community Collections
+community.docker>=3.0.0
+community.kubernetes>=2.0.0
+
+# Utility Collections
+community.general>=5.0.0
+
+# Crypto support for secrets
+community.crypto>=2.0.0
+
+# Helm support (optional)
+community.kubernetes.helm>=1.0.0
